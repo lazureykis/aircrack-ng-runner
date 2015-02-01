@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+require 'tempfile'
+
+CAP_FILES = []
+DICT_FILES = []
+NETWORKS = {}
+
+def usage
+  puts "USAGE: #{Process.argv0} words*.txt names.dic wpa.cap caps*.cap"
+  abort
+end
+
+def parse_args
+  ARGV.each do |filename|
+    if filename =~ /\.cap$/i
+      CAP_FILES.push(filename)
+    else
+      DICT_FILES.push(filename)
+    end
+  end
+end
+
+parse_args
+
+def ensure_cap_file_is_specified
+  return if CAP_FILES.count > 0
+  puts 'Error! Your should specify some *.cap files.'
+  usage
+end
+
+ensure_cap_file_is_specified
+
+def ensure_dict_file_is_specified
+  return if DICT_FILES.count > 0
+  puts 'Error! Your should specify some dictionary files.'
+  usage
+end
+
+ensure_dict_file_is_specified
+
+def detect_networks
+  Tempfile.open('networks') do |file|
+    pid = Process.spawn("aircrack-ng -w #{DICT_FILES.first} #{CAP_FILES.first}",
+                        err: :out, out: file.path)
+    sleep 1
+    Process.kill(:SIGINT, pid)
+    Process.waitpid(pid)
+
+    file.readlines.each do |line|
+      next if line !~ /^ *(?<num>\d+) +(?<mac>([0-9a-f]{2}:){5}[0-9a-f]{2}) +(?<name>.+?) + WPA \((?<handshakes>\d+) handshakes?\)$/i
+      num, mac, name, handshakes = Regexp.last_match.captures
+      next if handshakes.to_i <= 0
+
+      NETWORKS[num.to_i] = { name: name, mac: mac }
+    end
+  end
+end
+
+detect_networks
+
+def ensure_networks_found
+  if NETWORKS.count > 0
+    puts 'Networks found:'
+    NETWORKS.each do |num, network|
+      puts "#{num} [#{network[:mac]}] #{network[:name]}"
+    end
+    puts
+  else
+    puts "No networks found in these cap files: #{CAP_FILES.join(' ')}"
+    abort
+  end
+end
+
+ensure_networks_found
+
+def crack_all_networks
+  cap_files = CAP_FILES.map { |wpa| "'#{wpa}'" }.join(' ')
+
+  DICT_FILES.each do |dict|
+    NETWORKS.each do |_num, opts|
+      cmd = "aircrack-ng -w #{dict} -q -e '#{opts[:name]}' #{cap_files}"
+      puts cmd
+      out = `#{cmd}`
+      puts out if out !~ /Passphrase not in dictionary/
+    end
+  end
+  puts 'Done.'
+end
+
+crack_all_networks
